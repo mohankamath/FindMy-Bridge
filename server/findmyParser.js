@@ -289,15 +289,47 @@ function findVal(obj, ...keys) {
 export class FindMyParser {
   constructor(cacheDir = config.cacheDir) {
     this.cacheDir = cacheDir;
+    this.home = os.homedir();
     this.candidateDirs = [
       cacheDir,
-      path.join(os.homedir(), 'Library/Containers/com.apple.findmy/Data/Library/Caches/com.apple.findmy.fmipcore'),
-      path.join(os.homedir(), 'Library/Caches/com.apple.findmy'),
-      path.join(os.homedir(), 'Library/Application Support/FindMy')
+      path.join(this.home, 'Library/Containers/com.apple.findmy/Data/Library/Caches/com.apple.findmy.fmipcore'),
+      path.join(this.home, 'Library/Containers/com.apple.findmy/Data/Library/Caches'),
+      path.join(this.home, 'Library/Group Containers/group.com.apple.findmy/Library/Caches'),
+      path.join(this.home, 'Library/Group Containers/group.com.apple.findmy'),
+      path.join(this.home, 'Library/Caches/com.apple.findmy'),
+      path.join(this.home, 'Library/Containers/com.apple.findmy.findmywidgets/Data/Library/Caches'),
+      path.join(this.home, 'Library/Application Support/com.apple.findmy')
     ];
   }
 
+  async scanAllFindMyFiles() {
+    const foundFiles = [];
+    for (const dir of this.candidateDirs) {
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile()) {
+            const fullPath = path.join(dir, entry.name);
+            const stat = await fs.stat(fullPath);
+            foundFiles.push({ name: entry.name, path: fullPath, size: stat.size });
+          }
+        }
+      } catch (e) {}
+    }
+    return foundFiles;
+  }
+
   async findFile(filename) {
+    for (const dir of this.candidateDirs) {
+      const full = path.join(dir, filename);
+      try {
+        const stat = await fs.stat(full);
+        if (stat.size > 100) { // Prefer non-empty files
+          return full;
+        }
+      } catch (e) {}
+    }
+    // Fallback: any matching file
     for (const dir of this.candidateDirs) {
       const full = path.join(dir, filename);
       try {

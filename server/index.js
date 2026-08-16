@@ -97,10 +97,12 @@ app.get('/api/debug', async (req, res) => {
 
     const items = await parser.readItems();
     const devices = await parser.readDevices();
+    const scannedFiles = await parser.scanAllFindMyFiles();
 
     res.json({
       cacheDir: config.cacheDir,
       dirFiles,
+      scannedFiles,
       parsedCounts: {
         items: items.length,
         devices: devices.length
