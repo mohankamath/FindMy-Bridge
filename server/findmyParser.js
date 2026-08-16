@@ -291,6 +291,11 @@ export class FindMyParser {
     }
   }
 
+  async readRawFile(filePath) {
+    const rawData = await parseFileContent(filePath);
+    return extractArray(rawData, ['items', 'data', 'records', 'devices', 'beacons']);
+  }
+
   async readItems() {
     if (config.mockData) {
       return sampleItems;
@@ -313,7 +318,7 @@ export class FindMyParser {
       const itemsList = extractArray(rawData, ['items', 'data', 'records', 'beacons']);
       console.log(`[FindMyParser] Parsed ${itemsList.length} raw item records from ${path.basename(usedPath)}.`);
       if (itemsList.length > 0) {
-        console.log(`[FindMyParser] Item sample keys:`, Object.keys(itemsList[0]));
+        console.log(`[FindMyParser] Sample raw item object:`, JSON.stringify(itemsList[0]));
       }
       return this.parseItemsData(itemsList);
     } catch (err) {
@@ -336,7 +341,7 @@ export class FindMyParser {
       const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
       console.log(`[FindMyParser] Parsed ${devicesList.length} raw device records from ${path.basename(this.devicesFilePath)}.`);
       if (devicesList.length > 0) {
-        console.log(`[FindMyParser] Device sample keys:`, Object.keys(devicesList[0]));
+        console.log(`[FindMyParser] Sample raw device object:`, JSON.stringify(devicesList[0]));
       }
       return this.parseDevicesData(devicesList);
     } catch (err) {

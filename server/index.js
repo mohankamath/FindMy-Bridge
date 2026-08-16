@@ -76,6 +76,25 @@ app.get('/api/debug', async (req, res) => {
       dirFiles = `Error reading dir: ${e.message}`;
     }
 
+    let rawItemsData = null;
+    let rawDevicesData = null;
+
+    try {
+      rawItemsData = await parser.readRawFile(parser.itemsFilePath);
+    } catch (e) {
+      try {
+        rawItemsData = await parser.readRawFile(parser.beaconFilePath);
+      } catch (e2) {
+        rawItemsData = { error: e.message };
+      }
+    }
+
+    try {
+      rawDevicesData = await parser.readRawFile(parser.devicesFilePath);
+    } catch (e) {
+      rawDevicesData = { error: e.message };
+    }
+
     const items = await parser.readItems();
     const devices = await parser.readDevices();
 
@@ -86,8 +105,10 @@ app.get('/api/debug', async (req, res) => {
         items: items.length,
         devices: devices.length
       },
-      sampleItem: items[0] || null,
-      sampleDevice: devices[0] || null
+      rawItemsSnippet: Array.isArray(rawItemsData) ? rawItemsData.slice(0, 2) : rawItemsData,
+      rawDevicesSnippet: Array.isArray(rawDevicesData) ? rawDevicesData.slice(0, 2) : rawDevicesData,
+      parsedSampleItem: items[0] || null,
+      parsedSampleDevice: devices[0] || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message, stack: err.stack });
