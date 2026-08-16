@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import { config } from './config.js';
-import { FindMyParser } from './findmyParser.js';
+import { FindMyParser, parseFileContent } from './findmyParser.js';
 import { MacRefresher } from './macRefresher.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,29 +69,29 @@ app.get('/api/status', async (req, res) => {
 app.get('/api/debug', async (req, res) => {
   try {
     const fs = await import('fs/promises');
+    const itemsPath = path.join(config.cacheDir, 'Items.data');
+    const devicesPath = path.join(config.cacheDir, 'Devices.data');
+
     let dirFiles = [];
     try {
       dirFiles = await fs.readdir(config.cacheDir);
     } catch (e) {
-      dirFiles = `Error reading dir: ${e.message}`;
+      dirFiles = `Error: ${e.message}`;
     }
 
-    let rawItemsData = null;
-    let rawDevicesData = null;
-
-    const itemsPath = path.join(config.cacheDir, 'Items.data');
-    const devicesPath = path.join(config.cacheDir, 'Devices.data');
+    let rawItems = null;
+    let rawDevices = null;
 
     try {
-      rawItemsData = await parser.readRawFile(itemsPath);
+      rawItems = await parseFileContent(itemsPath);
     } catch (e) {
-      rawItemsData = { error: e.message };
+      rawItems = { error: e.message };
     }
 
     try {
-      rawDevicesData = await parser.readRawFile(devicesPath);
+      rawDevices = await parseFileContent(devicesPath);
     } catch (e) {
-      rawDevicesData = { error: e.message };
+      rawDevices = { error: e.message };
     }
 
     const items = await parser.readItems();
@@ -106,8 +106,8 @@ app.get('/api/debug', async (req, res) => {
         items: items.length,
         devices: devices.length
       },
-      rawItemsSnippet: Array.isArray(rawItemsData) ? rawItemsData.slice(0, 2) : rawItemsData,
-      rawDevicesSnippet: Array.isArray(rawDevicesData) ? rawDevicesData.slice(0, 2) : rawDevicesData,
+      rawItems,
+      rawDevices,
       parsedSampleItem: items[0] || null,
       parsedSampleDevice: devices[0] || null
     });
