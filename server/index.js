@@ -79,18 +79,17 @@ app.get('/api/debug', async (req, res) => {
     let rawItemsData = null;
     let rawDevicesData = null;
 
+    const itemsPath = path.join(config.cacheDir, 'Items.data');
+    const devicesPath = path.join(config.cacheDir, 'Devices.data');
+
     try {
-      rawItemsData = await parser.readRawFile(parser.itemsFilePath);
+      rawItemsData = await parser.readRawFile(itemsPath);
     } catch (e) {
-      try {
-        rawItemsData = await parser.readRawFile(parser.beaconFilePath);
-      } catch (e2) {
-        rawItemsData = { error: e.message };
-      }
+      rawItemsData = { error: e.message };
     }
 
     try {
-      rawDevicesData = await parser.readRawFile(parser.devicesFilePath);
+      rawDevicesData = await parser.readRawFile(devicesPath);
     } catch (e) {
       rawDevicesData = { error: e.message };
     }
