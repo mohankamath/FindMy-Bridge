@@ -114,7 +114,7 @@ class FindMyApp {
       this.btnRefresh.classList.add('spinning');
       this.showToast('Requesting refresh from MacBook...');
       try {
-        const res = await fetch('/api/refresh', {
+        const res = await fetch(this.apiUrl('api/refresh'), {
           method: 'POST',
           headers: this.getAuthHeaders()
         });
@@ -228,6 +228,12 @@ class FindMyApp {
     });
   }
 
+  apiUrl(endpoint) {
+    const cleanEndpoint = endpoint.replace(/^\/+/, '');
+    const pathname = window.location.pathname.replace(/\/+$/, '');
+    return `${pathname}/${cleanEndpoint}`;
+  }
+
   getAuthHeaders() {
     const headers = { 'Content-Type': 'application/json' };
     if (this.authToken) {
@@ -283,7 +289,8 @@ class FindMyApp {
   initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const tokenParam = this.authToken ? `?token=${encodeURIComponent(this.authToken)}` : '';
-    const wsUrl = `${protocol}//${window.location.host}/ws${tokenParam}`;
+    const pathname = window.location.pathname.replace(/\/+$/, '');
+    const wsUrl = `${protocol}//${window.location.host}${pathname}/ws${tokenParam}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -333,7 +340,7 @@ class FindMyApp {
 
   async fetchInitialData() {
     try {
-      const res = await fetch('/api/all', {
+      const res = await fetch(this.apiUrl('api/all'), {
         headers: this.getAuthHeaders()
       });
       if (res.status === 401) {
