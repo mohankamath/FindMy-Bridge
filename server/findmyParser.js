@@ -222,19 +222,28 @@ export async function parseFileContent(filePath) {
   throw new Error(`Unrecognized data format in ${path.basename(filePath)} (length: ${buffer.length})`);
 }
 
-function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'records', 'value']) {
+function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'records', 'value', 'itemsArray']) {
+  if (!data) return [];
   if (Array.isArray(data)) return data;
-  if (!data || typeof data !== 'object') return [];
+  if (typeof data !== 'object') return [];
 
+  // 1. Check preferred nested keys
   for (const key of preferredKeys) {
     if (Array.isArray(data[key])) {
       return data[key];
     }
   }
 
-  // If it's an object with numeric keys or values
-  const values = Object.values(data);
-  if (values.length > 0 && typeof values[0] === 'object') {
+  // 2. Check if any property is an array of objects
+  for (const [key, val] of Object.entries(data)) {
+    if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
+      return val;
+    }
+  }
+
+  // 3. If it's a dictionary mapping IDs to object records (e.g. { "UUID-1": { ... }, "UUID-2": { ... } })
+  const values = Object.values(data).filter(v => v && typeof v === 'object' && !Array.isArray(v));
+  if (values.length > 0) {
     return values;
   }
 
@@ -245,6 +254,7 @@ export class FindMyParser {
   constructor(cacheDir = config.cacheDir) {
     this.cacheDir = cacheDir;
     this.itemsFilePath = path.join(cacheDir, 'Items.data');
+    this.beaconFilePath = path.join(cacheDir, 'Beacon.data');
     this.devicesFilePath = path.join(cacheDir, 'Devices.data');
   }
 
@@ -273,11 +283,22 @@ export class FindMyParser {
     }
 
     try {
-      const rawData = await parseFileContent(this.itemsFilePath);
-      const itemsList = extractArray(rawData, ['items', 'data', 'records']);
+      let rawData = null;
+      try {
+        rawData = await parseFileContent(this.itemsFilePath);
+      } catch (itemsErr) {
+        // Try fallback to Beacon.data
+        try {
+          rawData = await parseFileContent(this.beaconFilePath);
+        } catch (beaconErr) {
+          throw itemsErr;
+        }
+      }
+
+      const itemsList = extractArray(rawData, ['items', 'data', 'records', 'beacons']);
+      console.log(`[FindMyParser] Parsed ${itemsList.length} raw item records from cache.`);
       return this.parseItemsData(itemsList);
     } catch (err) {
-      // If macOS cache not yet found or in development mode, fallback safely
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
         console.warn(`[FindMyParser] Could not read ${this.itemsFilePath} (${err.message}). Using sample items.`);
         return sampleItems;
@@ -295,9 +316,9 @@ export class FindMyParser {
     try {
       const rawData = await parseFileContent(this.devicesFilePath);
       const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
+      console.log(`[FindMyParser] Parsed ${devicesList.length} raw device records from cache.`);
       return this.parseDevicesData(devicesList);
     } catch (err) {
-      // Fallback for dev / mock
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
         console.warn(`[FindMyParser] Could not read ${this.devicesFilePath} (${err.message}). Using sample devices.`);
         return sampleDevices;
@@ -311,15 +332,17 @@ export class FindMyParser {
     if (!Array.isArray(rawItems)) return [];
 
     return rawItems.map((raw, idx) => {
-      const id = raw.identifier || raw.id || raw.serialNumber || `item-${idx}`;
-      const name = raw.name || raw.role?.name || `AirTag #${idx + 1}`;
+      const id = raw.identifier || raw.id || raw.serialNumber || raw.beaconIdentifier || `item-${idx}`;
+      const name = raw.name || raw.role?.name || raw.customName || `AirTag #${idx + 1}`;
       const roleName = raw.role?.name || '';
       const roleEmoji = raw.role?.emoji || '';
-      const productType = raw.productType?.type || raw.productType || 'AirTag';
+      const productType = raw.productType?.type || raw.productType || raw.partNumber || 'AirTag';
       const { category, emoji } = getCategoryAndEmoji(name, roleName, roleEmoji, productType, 'item');
       
-      const loc = raw.location || {};
-      const timestamp = normalizeTimestamp(loc.timeStamp || raw.timestamp || raw.locationTimestamp);
+      const loc = raw.location || raw.position || raw.lastKnownLocation || raw.beaconLocation || {};
+      const lat = Number(loc.latitude ?? loc.lat ?? raw.latitude ?? raw.lat ?? 0);
+      const lon = Number(loc.longitude ?? loc.long ?? loc.lng ?? raw.longitude ?? raw.lng ?? 0);
+      const timestamp = normalizeTimestamp(loc.timeStamp || loc.timestamp || raw.timestamp || raw.locationTimestamp);
       const isOld = Boolean(loc.isOld || (Date.now() - timestamp > 24 * 60 * 60 * 1000));
       const battery = normalizeBattery(raw.batteryStatus, raw.batteryLevel, raw.isCharging);
       const address = formatAddress(raw.address || loc.address);
@@ -333,9 +356,9 @@ export class FindMyParser {
         emoji,
         battery,
         location: {
-          latitude: loc.latitude || 0,
-          longitude: loc.longitude || 0,
-          accuracy: loc.horizontalAccuracy || 15,
+          latitude: lat,
+          longitude: lon,
+          accuracy: Number(loc.horizontalAccuracy || loc.accuracy || 15),
           timestamp,
           isOld,
           isAccurate: !loc.isInaccurate,
@@ -345,21 +368,23 @@ export class FindMyParser {
         isLost: Boolean(raw.lostModeMetadata?.isEnabled || raw.isLost),
         rawStatus: raw.status || 'connected'
       };
-    }).filter(item => item.location.latitude !== 0 || item.location.longitude !== 0);
+    });
   }
 
   parseDevicesData(rawDevices) {
     if (!Array.isArray(rawDevices)) return [];
 
     return rawDevices.map((raw, idx) => {
-      const id = raw.id || raw.deviceDiscoveryId || `device-${idx}`;
-      const name = raw.name || raw.deviceDisplayName || `Apple Device #${idx + 1}`;
+      const id = raw.id || raw.deviceDiscoveryId || raw.serialNumber || `device-${idx}`;
+      const name = raw.name || raw.deviceDisplayName || raw.modelDisplayName || `Apple Device #${idx + 1}`;
       const deviceModel = raw.deviceModel || raw.modelDisplayName || '';
       const productType = raw.deviceClass || raw.deviceModel || 'AppleDevice';
       const { category, emoji } = getCategoryAndEmoji(name, raw.deviceDisplayName, '', deviceModel, 'device');
 
-      const loc = raw.location || {};
-      const timestamp = normalizeTimestamp(loc.timeStamp || raw.locationTimestamp || raw.timeStamp);
+      const loc = raw.location || raw.position || raw.lastKnownLocation || raw.deviceLocation || {};
+      const lat = Number(loc.latitude ?? loc.lat ?? raw.latitude ?? raw.lat ?? 0);
+      const lon = Number(loc.longitude ?? loc.long ?? loc.lng ?? raw.longitude ?? raw.lng ?? 0);
+      const timestamp = normalizeTimestamp(loc.timeStamp || loc.timestamp || raw.locationTimestamp || raw.timeStamp);
       const isOld = Boolean(loc.isOld || (Date.now() - timestamp > 24 * 60 * 60 * 1000));
       const battery = normalizeBattery(raw.batteryStatus, raw.batteryLevel, raw.batteryStatus === 'Charging');
       const address = formatAddress(raw.address || loc.address);
@@ -374,9 +399,9 @@ export class FindMyParser {
         emoji,
         battery,
         location: {
-          latitude: loc.latitude || 0,
-          longitude: loc.longitude || 0,
-          accuracy: loc.horizontalAccuracy || 10,
+          latitude: lat,
+          longitude: lon,
+          accuracy: Number(loc.horizontalAccuracy || loc.accuracy || 10),
           timestamp,
           isOld,
           isAccurate: !loc.isInaccurate,
@@ -387,7 +412,7 @@ export class FindMyParser {
         isLost: Boolean(raw.lostModeEnabled || raw.isLost),
         rawStatus: raw.deviceStatus || 'online'
       };
-    }).filter(dev => dev.location.latitude !== 0 || dev.location.longitude !== 0);
+    });
   }
 
   async getAll() {

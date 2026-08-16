@@ -66,6 +66,34 @@ app.get('/api/status', async (req, res) => {
   });
 });
 
+app.get('/api/debug', async (req, res) => {
+  try {
+    const fs = await import('fs/promises');
+    let dirFiles = [];
+    try {
+      dirFiles = await fs.readdir(config.cacheDir);
+    } catch (e) {
+      dirFiles = `Error reading dir: ${e.message}`;
+    }
+
+    const items = await parser.readItems();
+    const devices = await parser.readDevices();
+
+    res.json({
+      cacheDir: config.cacheDir,
+      dirFiles,
+      parsedCounts: {
+        items: items.length,
+        devices: devices.length
+      },
+      sampleItem: items[0] || null,
+      sampleDevice: devices[0] || null
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 app.get('/api/all', authMiddleware, async (req, res) => {
   try {
     const data = await parser.getAll();
