@@ -182,6 +182,18 @@ export function formatAddress(rawAddress) {
 
 // Parse binary plist or JSON from file buffer or path
 export async function parseFileContent(filePath) {
+  // On macOS, native plutil handles Apple's exact bplist and CoreData formats best
+  if (config.isMacOS) {
+    try {
+      const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
+      if (stdout && stdout.trim()) {
+        return JSON.parse(stdout);
+      }
+    } catch (plutilErr) {
+      // Fallback to JS parser if plutil fails
+    }
+  }
+
   const buffer = await fs.readFile(filePath);
   
   // 1. Binary property list (starts with magic bytes "bplist")
@@ -193,14 +205,6 @@ export async function parseFileContent(filePath) {
       }
       return parsed;
     } catch (bplistErr) {
-      if (config.isMacOS) {
-        try {
-          const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
-          return JSON.parse(stdout);
-        } catch (plutilErr) {
-          throw new Error(`Failed to parse bplist via plutil: ${plutilErr.message}`);
-        }
-      }
       throw bplistErr;
     }
   }
@@ -211,14 +215,6 @@ export async function parseFileContent(filePath) {
     return JSON.parse(text);
   }
 
-  // 3. Fallback for macOS plutil (handles XML plists, old plist formats)
-  if (config.isMacOS) {
-    try {
-      const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
-      return JSON.parse(stdout);
-    } catch (e) {}
-  }
-
   throw new Error(`Unrecognized data format in ${path.basename(filePath)} (length: ${buffer.length})`);
 }
 
@@ -226,6 +222,15 @@ function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'record
   if (!data) return [];
   if (Array.isArray(data)) return data;
   if (typeof data !== 'object') return [];
+
+  // If NSKeyedArchiver structure ($objects)
+  if (Array.isArray(data.$objects)) {
+    const candidateObjects = data.$objects.filter(obj => 
+      obj && typeof obj === 'object' && !Array.isArray(obj) &&
+      (obj.name || obj.deviceDisplayName || obj.location || obj.latitude || obj.role || obj.productType || obj.baUUID || obj.deviceModel)
+    );
+    if (candidateObjects.length > 0) return candidateObjects;
+  }
 
   // 1. Check preferred nested keys
   for (const key of preferredKeys) {
@@ -241,13 +246,22 @@ function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'record
     }
   }
 
-  // 3. If it's a dictionary mapping IDs to object records (e.g. { "UUID-1": { ... }, "UUID-2": { ... } })
+  // 3. If it's a dictionary mapping IDs to object records
   const values = Object.values(data).filter(v => v && typeof v === 'object' && !Array.isArray(v));
   if (values.length > 0) {
     return values;
   }
 
   return [];
+}
+
+// Deep key finders
+function findVal(obj, ...keys) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return undefined;
 }
 
 export class FindMyParser {
@@ -284,23 +298,27 @@ export class FindMyParser {
 
     try {
       let rawData = null;
+      let usedPath = this.itemsFilePath;
       try {
         rawData = await parseFileContent(this.itemsFilePath);
       } catch (itemsErr) {
-        // Try fallback to Beacon.data
         try {
           rawData = await parseFileContent(this.beaconFilePath);
+          usedPath = this.beaconFilePath;
         } catch (beaconErr) {
           throw itemsErr;
         }
       }
 
       const itemsList = extractArray(rawData, ['items', 'data', 'records', 'beacons']);
-      console.log(`[FindMyParser] Parsed ${itemsList.length} raw item records from cache.`);
+      console.log(`[FindMyParser] Parsed ${itemsList.length} raw item records from ${path.basename(usedPath)}.`);
+      if (itemsList.length > 0) {
+        console.log(`[FindMyParser] Item sample keys:`, Object.keys(itemsList[0]));
+      }
       return this.parseItemsData(itemsList);
     } catch (err) {
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
-        console.warn(`[FindMyParser] Could not read ${this.itemsFilePath} (${err.message}). Using sample items.`);
+        console.warn(`[FindMyParser] Could not read items (${err.message}). Using sample items.`);
         return sampleItems;
       }
       console.error(`[FindMyParser] Failed to read items cache:`, err.message);
@@ -316,11 +334,14 @@ export class FindMyParser {
     try {
       const rawData = await parseFileContent(this.devicesFilePath);
       const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
-      console.log(`[FindMyParser] Parsed ${devicesList.length} raw device records from cache.`);
+      console.log(`[FindMyParser] Parsed ${devicesList.length} raw device records from ${path.basename(this.devicesFilePath)}.`);
+      if (devicesList.length > 0) {
+        console.log(`[FindMyParser] Device sample keys:`, Object.keys(devicesList[0]));
+      }
       return this.parseDevicesData(devicesList);
     } catch (err) {
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
-        console.warn(`[FindMyParser] Could not read ${this.devicesFilePath} (${err.message}). Using sample devices.`);
+        console.warn(`[FindMyParser] Could not read devices (${err.message}). Using sample devices.`);
         return sampleDevices;
       }
       console.error(`[FindMyParser] Failed to read devices cache:`, err.message);
@@ -332,24 +353,37 @@ export class FindMyParser {
     if (!Array.isArray(rawItems)) return [];
 
     return rawItems.map((raw, idx) => {
-      const id = raw.identifier || raw.id || raw.serialNumber || raw.beaconIdentifier || `item-${idx}`;
-      const name = raw.name || raw.role?.name || raw.customName || `AirTag #${idx + 1}`;
-      const roleName = raw.role?.name || '';
-      const roleEmoji = raw.role?.emoji || '';
-      const productType = raw.productType?.type || raw.productType || raw.partNumber || 'AirTag';
+      const id = findVal(raw, 'identifier', 'id', 'serialNumber', 'beaconIdentifier', 'baUUID') || `item-${idx}`;
+      
+      const roleObj = raw.role && typeof raw.role === 'object' ? raw.role : {};
+      const roleName = findVal(roleObj, 'name') || (typeof raw.role === 'string' ? raw.role : '');
+      const roleEmoji = findVal(roleObj, 'emoji') || '';
+
+      const name = findVal(raw, 'name', 'customName', 'title', 'ownerName', 'label', 'description') || roleName || `AirTag #${idx + 1}`;
+      
+      const prodTypeObj = raw.productType && typeof raw.productType === 'object' ? raw.productType : {};
+      const productType = findVal(prodTypeObj, 'type') || (typeof raw.productType === 'string' ? raw.productType : '') || findVal(raw, 'partNumber', 'model') || 'AirTag';
+      
       const { category, emoji } = getCategoryAndEmoji(name, roleName, roleEmoji, productType, 'item');
       
-      const loc = raw.location || raw.position || raw.lastKnownLocation || raw.beaconLocation || {};
-      const lat = Number(loc.latitude ?? loc.lat ?? raw.latitude ?? raw.lat ?? 0);
-      const lon = Number(loc.longitude ?? loc.long ?? loc.lng ?? raw.longitude ?? raw.lng ?? 0);
-      const timestamp = normalizeTimestamp(loc.timeStamp || loc.timestamp || raw.timestamp || raw.locationTimestamp);
+      const loc = findVal(raw, 'location', 'position', 'lastKnownLocation', 'beaconLocation', 'coordinate') || {};
+      const lat = Number(findVal(loc, 'latitude', 'lat') ?? findVal(raw, 'latitude', 'lat') ?? 0);
+      const lon = Number(findVal(loc, 'longitude', 'long', 'lng') ?? findVal(raw, 'longitude', 'long', 'lng') ?? 0);
+      const rawTs = findVal(loc, 'timeStamp', 'timestamp', 'locationTimestamp') ?? findVal(raw, 'timestamp', 'locationTimestamp');
+      const timestamp = normalizeTimestamp(rawTs);
+      
       const isOld = Boolean(loc.isOld || (Date.now() - timestamp > 24 * 60 * 60 * 1000));
-      const battery = normalizeBattery(raw.batteryStatus, raw.batteryLevel, raw.isCharging);
-      const address = formatAddress(raw.address || loc.address);
+      const battery = normalizeBattery(
+        findVal(raw, 'batteryStatus', 'batteryLevelStatus'),
+        findVal(raw, 'batteryLevel', 'batteryPercent'),
+        findVal(raw, 'isCharging')
+      );
+      
+      const address = formatAddress(findVal(raw, 'address', 'lastKnownAddress') || loc.address || loc.formattedAddressLines);
 
       return {
-        id,
-        name,
+        id: String(id),
+        name: String(name),
         type: 'item',
         category,
         productType: typeof productType === 'string' ? productType : 'AirTag',
@@ -358,7 +392,7 @@ export class FindMyParser {
         location: {
           latitude: lat,
           longitude: lon,
-          accuracy: Number(loc.horizontalAccuracy || loc.accuracy || 15),
+          accuracy: Number(findVal(loc, 'horizontalAccuracy', 'accuracy') ?? 15),
           timestamp,
           isOld,
           isAccurate: !loc.isInaccurate,
@@ -375,33 +409,40 @@ export class FindMyParser {
     if (!Array.isArray(rawDevices)) return [];
 
     return rawDevices.map((raw, idx) => {
-      const id = raw.id || raw.deviceDiscoveryId || raw.serialNumber || `device-${idx}`;
-      const name = raw.name || raw.deviceDisplayName || raw.modelDisplayName || `Apple Device #${idx + 1}`;
-      const deviceModel = raw.deviceModel || raw.modelDisplayName || '';
-      const productType = raw.deviceClass || raw.deviceModel || 'AppleDevice';
+      const id = findVal(raw, 'id', 'deviceDiscoveryId', 'serialNumber', 'baUUID', 'prsId') || `device-${idx}`;
+      const name = findVal(raw, 'name', 'deviceDisplayName', 'modelDisplayName', 'deviceName', 'title') || `Apple Device #${idx + 1}`;
+      const deviceModel = findVal(raw, 'deviceModel', 'modelDisplayName', 'rawDeviceModel', 'model') || '';
+      const productType = findVal(raw, 'deviceClass', 'deviceModel', 'deviceType') || 'AppleDevice';
       const { category, emoji } = getCategoryAndEmoji(name, raw.deviceDisplayName, '', deviceModel, 'device');
 
-      const loc = raw.location || raw.position || raw.lastKnownLocation || raw.deviceLocation || {};
-      const lat = Number(loc.latitude ?? loc.lat ?? raw.latitude ?? raw.lat ?? 0);
-      const lon = Number(loc.longitude ?? loc.long ?? loc.lng ?? raw.longitude ?? raw.lng ?? 0);
-      const timestamp = normalizeTimestamp(loc.timeStamp || loc.timestamp || raw.locationTimestamp || raw.timeStamp);
+      const loc = findVal(raw, 'location', 'position', 'lastKnownLocation', 'deviceLocation', 'coordinate') || {};
+      const lat = Number(findVal(loc, 'latitude', 'lat') ?? findVal(raw, 'latitude', 'lat') ?? 0);
+      const lon = Number(findVal(loc, 'longitude', 'long', 'lng') ?? findVal(raw, 'longitude', 'long', 'lng') ?? 0);
+      const rawTs = findVal(loc, 'timeStamp', 'timestamp', 'locationTimestamp') ?? findVal(raw, 'locationTimestamp', 'timeStamp', 'timestamp');
+      const timestamp = normalizeTimestamp(rawTs);
+      
       const isOld = Boolean(loc.isOld || (Date.now() - timestamp > 24 * 60 * 60 * 1000));
-      const battery = normalizeBattery(raw.batteryStatus, raw.batteryLevel, raw.batteryStatus === 'Charging');
-      const address = formatAddress(raw.address || loc.address);
+      const battery = normalizeBattery(
+        findVal(raw, 'batteryStatus', 'batteryLevelStatus'),
+        findVal(raw, 'batteryLevel', 'batteryPercent'),
+        raw.batteryStatus === 'Charging' || raw.isCharging
+      );
+      
+      const address = formatAddress(findVal(raw, 'address', 'lastKnownAddress') || loc.address || loc.formattedAddressLines);
 
       return {
-        id,
-        name,
+        id: String(id),
+        name: String(name),
         type: 'device',
         category,
-        productType,
+        productType: typeof productType === 'string' ? productType : 'AppleDevice',
         modelName: raw.modelDisplayName || raw.deviceDisplayName || deviceModel || 'Apple Device',
         emoji,
         battery,
         location: {
           latitude: lat,
           longitude: lon,
-          accuracy: Number(loc.horizontalAccuracy || loc.accuracy || 10),
+          accuracy: Number(findVal(loc, 'horizontalAccuracy', 'accuracy') ?? 10),
           timestamp,
           isOld,
           isAccurate: !loc.isInaccurate,
