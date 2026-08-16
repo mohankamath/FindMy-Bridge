@@ -1,0 +1,22 @@
+{
+  "name": "findmy-android-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Bridge Apple Find My network data from macOS to Android via web app and PWA",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "mock": "MOCK_DATA=true node server/index.js",
+    "setup:mac": "bash scripts/setup-mac.sh"
+  },
+  "keywords": ["findmy", "airtag", "apple", "android", "tailscale", "pwa"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  }
+}

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="FindMy">
+  <meta name="description" content="Access Apple Find My network and AirTags from Android">
+  
+  <title>FindMy • Android</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+
+  <!-- Main Styles -->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="theme-dark">
+  <div id="app" class="app-container">
+
+    <!-- Top Navigation / Search Header -->
+    <header class="app-header">
+      <div class="header-main">
+        <div class="logo-area">
+          <div class="radar-pulse">
+            <span class="radar-core"></span>
+          </div>
+          <div class="header-titles">
+            <h1 class="header-title">Find My</h1>
+            <div class="status-indicator-badge" id="connection-badge">
+              <span class="status-dot"></span>
+              <span class="status-text" id="status-text">Connecting...</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button id="btn-refresh" class="btn-icon" title="Force Refresh" aria-label="Refresh Data">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
+          <button id="btn-my-location" class="btn-icon" title="Center on My Phone" aria-label="My Location">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="3 11 22 2 13 21 11 13 3 11"/>
+            </svg>
+          </button>
+          <button id="btn-auth-settings" class="btn-icon" title="Auth Token Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Filter Tabs & Search -->
+      <div class="header-controls">
+        <div class="search-bar">
+          <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search AirTags, keys, devices..." autocomplete="off">
+          <button id="search-clear" class="search-clear hidden" aria-label="Clear Search">✕</button>
+        </div>
+
+        <div class="filter-chips">
+          <button class="chip active" data-filter="all">All <span class="chip-count" id="count-all">0</span></button>
+          <button class="chip" data-filter="items">AirTags & Items <span class="chip-count" id="count-items">0</span></button>
+          <button class="chip" data-filter="devices">Devices <span class="chip-count" id="count-devices">0</span></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Map & Drawer Layout -->
+    <main class="main-content">
+      <!-- Interactive Leaflet Map -->
+      <div id="map-container" class="map-view"></div>
+
+      <!-- Toggle Drawer Button (Mobile Floating Trigger) -->
+      <button id="drawer-toggle" class="drawer-toggle-btn" aria-label="Toggle Devices List">
+        <span class="drawer-handle-bar"></span>
+        <span class="drawer-toggle-label">List View (<span id="count-total-float">0</span>)</span>
+      </button>
+
+      <!-- Sidebar / Bottom Drawer for Items List -->
+      <aside id="device-drawer" class="device-drawer">
+        <div class="drawer-header-drag" id="drawer-handle">
+          <div class="drag-indicator"></div>
+        </div>
+
+        <div class="list-section-header">
+          <h2 class="list-heading">Items & Devices</h2>
+          <span class="list-last-sync" id="last-sync-label">Syncing...</span>
+        </div>
+
+        <!-- Scrollable Cards List -->
+        <div class="cards-container" id="cards-list">
+          <div class="loading-placeholder">
+            <div class="spinner"></div>
+            <p>Fetching Find My locations from MacBook...</p>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Item Details Modal / Sheet -->
+    <div id="detail-modal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <button id="modal-close" class="modal-close-btn" aria-label="Close">✕</button>
+        
+        <div class="modal-header">
+          <div class="modal-icon-badge" id="modal-emoji">📍</div>
+          <div class="modal-title-group">
+            <h3 id="modal-title" class="modal-title">Item Name</h3>
+            <div class="modal-subtitle" id="modal-subtitle">AirTag • Updated 2m ago</div>
+          </div>
+        </div>
+
+        <div class="modal-body">
+          <div class="info-grid">
+            <div class="info-card">
+              <span class="info-label">Battery</span>
+              <div class="info-val" id="modal-battery">--</div>
+            </div>
+            <div class="info-card">
+              <span class="info-label">Accuracy</span>
+              <div class="info-val" id="modal-accuracy">±10 m</div>
+            </div>
+            <div class="info-card">
+              <span class="info-label">Distance from Phone</span>
+              <div class="info-val" id="modal-distance">Calculating...</div>
+            </div>
+            <div class="info-card">
+              <span class="info-label">Status</span>
+              <div class="info-val" id="modal-status">Normal</div>
+            </div>
+          </div>
+
+          <div class="address-box">
+            <span class="info-label">Last Known Address</span>
+            <p id="modal-address" class="address-text">Address...</p>
+            <button id="btn-copy-address" class="btn-subtle">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              Copy Address
+            </button>
+          </div>
+
+          <!-- Navigation Deep Links for Android -->
+          <div class="modal-actions">
+            <a id="btn-google-maps" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary-action">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+              </svg>
+              Directions in Google Maps
+            </a>
+            
+            <div class="secondary-actions">
+              <button id="btn-share" class="btn-secondary-action">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="18" cy="5" r="3"/>
+                  <circle cx="6" cy="12" r="3"/>
+                  <circle cx="18" cy="19" r="3"/>
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                  <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+                Share Coordinates
+              </button>
+              <button id="btn-focus-map" class="btn-secondary-action">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                Show on Map
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auth / Token Configuration Modal -->
+    <div id="auth-modal" class="modal-backdrop hidden">
+      <div class="modal-card small">
+        <button id="auth-modal-close" class="modal-close-btn" aria-label="Close">✕</button>
+        <h3 class="modal-title">Bridge Security & Auth</h3>
+        <p class="modal-desc">If you configured <code>AUTH_TOKEN</code> in your MacBook's <code>.env</code> file, enter it below so this phone can securely authenticate over Tailscale.</p>
+        
+        <div class="form-group">
+          <label for="token-input" class="info-label">Access Token / PIN</label>
+          <input type="password" id="token-input" placeholder="Enter token..." autocomplete="current-password">
+        </div>
+
+        <div class="auth-modal-buttons">
+          <button id="btn-save-token" class="btn-primary-action">Save & Connect</button>
+          <button id="btn-clear-token" class="btn-subtle">Clear Saved Token</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification Overlay -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- App JS -->
+  <script src="/app.js"></script>
+</body>
+</html>
