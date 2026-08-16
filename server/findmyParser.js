@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import { exec } from 'child_process';
 import util from 'util';
 import bplistParser from 'bplist-parser';
@@ -218,16 +219,32 @@ export async function parseFileContent(filePath) {
   throw new Error(`Unrecognized data format in ${path.basename(filePath)} (length: ${buffer.length})`);
 }
 
-function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'records', 'value', 'itemsArray']) {
+function isPlainRecord(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (Array.isArray(obj)) return false;
+  if (Buffer.isBuffer(obj)) return false;
+  if (obj.type === 'Buffer' && Array.isArray(obj.data)) return false;
+  return true;
+}
+
+function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'records', 'beacons', 'itemsArray']) {
   if (!data) return [];
-  if (Array.isArray(data)) return data;
-  if (typeof data !== 'object') return [];
+
+  // If already array of plain records
+  if (Array.isArray(data)) {
+    const valid = data.filter(isPlainRecord);
+    if (valid.length > 0) return valid;
+    // If array of buffers, return []
+    return [];
+  }
+
+  if (typeof data !== 'object' || Buffer.isBuffer(data)) return [];
 
   // If NSKeyedArchiver structure ($objects)
   if (Array.isArray(data.$objects)) {
     const candidateObjects = data.$objects.filter(obj => 
-      obj && typeof obj === 'object' && !Array.isArray(obj) &&
-      (obj.name || obj.deviceDisplayName || obj.location || obj.latitude || obj.role || obj.productType || obj.baUUID || obj.deviceModel)
+      isPlainRecord(obj) &&
+      (obj.name || obj.deviceDisplayName || obj.location || obj.latitude || obj.role || obj.productType || obj.baUUID || obj.deviceModel || obj.identifier)
     );
     if (candidateObjects.length > 0) return candidateObjects;
   }
@@ -235,19 +252,24 @@ function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'record
   // 1. Check preferred nested keys
   for (const key of preferredKeys) {
     if (Array.isArray(data[key])) {
-      return data[key];
+      const valid = data[key].filter(isPlainRecord);
+      if (valid.length > 0) return valid;
+    } else if (isPlainRecord(data[key])) {
+      const nestedValues = Object.values(data[key]).filter(isPlainRecord);
+      if (nestedValues.length > 0) return nestedValues;
     }
   }
 
-  // 2. Check if any property is an array of objects
+  // 2. Check if any property is an array of plain records
   for (const [key, val] of Object.entries(data)) {
-    if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
-      return val;
+    if (Array.isArray(val)) {
+      const valid = val.filter(isPlainRecord);
+      if (valid.length > 0) return valid;
     }
   }
 
-  // 3. If it's a dictionary mapping IDs to object records
-  const values = Object.values(data).filter(v => v && typeof v === 'object' && !Array.isArray(v));
+  // 3. If it's a dictionary mapping UUIDs to object records
+  const values = Object.values(data).filter(isPlainRecord);
   if (values.length > 0) {
     return values;
   }
@@ -267,9 +289,23 @@ function findVal(obj, ...keys) {
 export class FindMyParser {
   constructor(cacheDir = config.cacheDir) {
     this.cacheDir = cacheDir;
-    this.itemsFilePath = path.join(cacheDir, 'Items.data');
-    this.beaconFilePath = path.join(cacheDir, 'Beacon.data');
-    this.devicesFilePath = path.join(cacheDir, 'Devices.data');
+    this.candidateDirs = [
+      cacheDir,
+      path.join(os.homedir(), 'Library/Containers/com.apple.findmy/Data/Library/Caches/com.apple.findmy.fmipcore'),
+      path.join(os.homedir(), 'Library/Caches/com.apple.findmy'),
+      path.join(os.homedir(), 'Library/Application Support/FindMy')
+    ];
+  }
+
+  async findFile(filename) {
+    for (const dir of this.candidateDirs) {
+      const full = path.join(dir, filename);
+      try {
+        await fs.access(full);
+        return full;
+      } catch (e) {}
+    }
+    return path.join(this.cacheDir, filename);
   }
 
   async checkCacheAccess() {
@@ -302,24 +338,34 @@ export class FindMyParser {
     }
 
     try {
+      const itemsPath = await this.findFile('Items.data');
       let rawData = null;
-      let usedPath = this.itemsFilePath;
+      let usedPath = itemsPath;
+
       try {
-        rawData = await parseFileContent(this.itemsFilePath);
+        rawData = await parseFileContent(itemsPath);
       } catch (itemsErr) {
+        const beaconPath = await this.findFile('Beacon.data');
         try {
-          rawData = await parseFileContent(this.beaconFilePath);
-          usedPath = this.beaconFilePath;
+          rawData = await parseFileContent(beaconPath);
+          usedPath = beaconPath;
         } catch (beaconErr) {
           throw itemsErr;
         }
       }
 
       const itemsList = extractArray(rawData, ['items', 'data', 'records', 'beacons']);
-      console.log(`[FindMyParser] Parsed ${itemsList.length} raw item records from ${path.basename(usedPath)}.`);
-      if (itemsList.length > 0) {
-        console.log(`[FindMyParser] Sample raw item object:`, JSON.stringify(itemsList[0]));
+      console.log(`[FindMyParser] Parsed ${itemsList.length} valid item records from ${usedPath}`);
+      if (itemsList.length === 0 && rawData && typeof rawData === 'object') {
+        console.log(`[FindMyParser] Raw keys in ${path.basename(usedPath)}:`, Object.keys(rawData));
+      } else if (itemsList.length > 0) {
+        console.log(`[FindMyParser] Item sample keys:`, Object.keys(itemsList[0]));
       }
+
+      if (itemsList.length === 0 && (!config.isMacOS || process.env.NODE_ENV !== 'production')) {
+        return sampleItems;
+      }
+
       return this.parseItemsData(itemsList);
     } catch (err) {
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
@@ -337,12 +383,20 @@ export class FindMyParser {
     }
 
     try {
-      const rawData = await parseFileContent(this.devicesFilePath);
+      const devicesPath = await this.findFile('Devices.data');
+      const rawData = await parseFileContent(devicesPath);
       const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
-      console.log(`[FindMyParser] Parsed ${devicesList.length} raw device records from ${path.basename(this.devicesFilePath)}.`);
-      if (devicesList.length > 0) {
-        console.log(`[FindMyParser] Sample raw device object:`, JSON.stringify(devicesList[0]));
+      console.log(`[FindMyParser] Parsed ${devicesList.length} valid device records from ${devicesPath}`);
+      if (devicesList.length === 0 && rawData && typeof rawData === 'object') {
+        console.log(`[FindMyParser] Raw keys in ${path.basename(devicesPath)}:`, Object.keys(rawData));
+      } else if (devicesList.length > 0) {
+        console.log(`[FindMyParser] Device sample keys:`, Object.keys(devicesList[0]));
       }
+
+      if (devicesList.length === 0 && (!config.isMacOS || process.env.NODE_ENV !== 'production')) {
+        return sampleDevices;
+      }
+
       return this.parseDevicesData(devicesList);
     } catch (err) {
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
