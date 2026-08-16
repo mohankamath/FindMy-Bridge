@@ -289,6 +289,9 @@ function findVal(obj, ...keys) {
 export class FindMyParser {
   constructor(cacheDir = config.cacheDir) {
     this.cacheDir = cacheDir;
+    this.itemsFilePath = path.join(cacheDir, 'Items.data');
+    this.devicesFilePath = path.join(cacheDir, 'Devices.data');
+    this.beaconFilePath = path.join(cacheDir, 'Beacon.data');
     this.home = os.homedir();
     this.candidateDirs = [
       cacheDir,
@@ -324,12 +327,11 @@ export class FindMyParser {
       const full = path.join(dir, filename);
       try {
         const stat = await fs.stat(full);
-        if (stat.size > 100) { // Prefer non-empty files
+        if (stat.size > 100) {
           return full;
         }
       } catch (e) {}
     }
-    // Fallback: any matching file
     for (const dir of this.candidateDirs) {
       const full = path.join(dir, filename);
       try {
@@ -361,7 +363,7 @@ export class FindMyParser {
 
   async readRawFile(filePath) {
     const rawData = await parseFileContent(filePath);
-    return extractArray(rawData, ['items', 'data', 'records', 'devices', 'beacons']);
+    return rawData;
   }
 
   async readItems() {
@@ -388,23 +390,16 @@ export class FindMyParser {
 
       const itemsList = extractArray(rawData, ['items', 'data', 'records', 'beacons']);
       console.log(`[FindMyParser] Parsed ${itemsList.length} valid item records from ${usedPath}`);
-      if (itemsList.length === 0 && rawData && typeof rawData === 'object') {
-        console.log(`[FindMyParser] Raw keys in ${path.basename(usedPath)}:`, Object.keys(rawData));
-      } else if (itemsList.length > 0) {
+      if (itemsList.length > 0) {
         console.log(`[FindMyParser] Item sample keys:`, Object.keys(itemsList[0]));
-      }
-
-      if (itemsList.length === 0 && (!config.isMacOS || process.env.NODE_ENV !== 'production')) {
-        return sampleItems;
       }
 
       return this.parseItemsData(itemsList);
     } catch (err) {
-      if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
-        console.warn(`[FindMyParser] Could not read items (${err.message}). Using sample items.`);
+      console.error(`[FindMyParser] Failed to read items cache:`, err.message);
+      if (!config.isMacOS) {
         return sampleItems;
       }
-      console.error(`[FindMyParser] Failed to read items cache:`, err.message);
       return [];
     }
   }
@@ -419,23 +414,16 @@ export class FindMyParser {
       const rawData = await parseFileContent(devicesPath);
       const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
       console.log(`[FindMyParser] Parsed ${devicesList.length} valid device records from ${devicesPath}`);
-      if (devicesList.length === 0 && rawData && typeof rawData === 'object') {
-        console.log(`[FindMyParser] Raw keys in ${path.basename(devicesPath)}:`, Object.keys(rawData));
-      } else if (devicesList.length > 0) {
+      if (devicesList.length > 0) {
         console.log(`[FindMyParser] Device sample keys:`, Object.keys(devicesList[0]));
-      }
-
-      if (devicesList.length === 0 && (!config.isMacOS || process.env.NODE_ENV !== 'production')) {
-        return sampleDevices;
       }
 
       return this.parseDevicesData(devicesList);
     } catch (err) {
-      if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
-        console.warn(`[FindMyParser] Could not read devices (${err.message}). Using sample devices.`);
+      console.error(`[FindMyParser] Failed to read devices cache:`, err.message);
+      if (!config.isMacOS) {
         return sampleDevices;
       }
-      console.error(`[FindMyParser] Failed to read devices cache:`, err.message);
       return [];
     }
   }
