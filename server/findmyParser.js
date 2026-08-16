@@ -181,42 +181,73 @@ export function formatAddress(rawAddress) {
   };
 }
 
+import zlib from 'zlib';
+import { MacAppleScriptReader } from './macAppleScriptReader.js';
+
 // Parse binary plist or JSON from file buffer or path
 export async function parseFileContent(filePath) {
+  let parsedJson = null;
+
   // On macOS, native plutil handles Apple's exact bplist and CoreData formats best
   if (config.isMacOS) {
     try {
       const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
       if (stdout && stdout.trim()) {
-        return JSON.parse(stdout);
+        parsedJson = JSON.parse(stdout);
       }
-    } catch (plutilErr) {
-      // Fallback to JS parser if plutil fails
+    } catch (plutilErr) {}
+  }
+
+  if (!parsedJson) {
+    const buffer = await fs.readFile(filePath);
+    
+    // 1. Binary property list (starts with magic bytes "bplist")
+    if (buffer.length >= 6 && buffer.toString('utf8', 0, 6) === 'bplist') {
+      try {
+        const parsed = bplistParser.parseBuffer(buffer);
+        parsedJson = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
+      } catch (bplistErr) {
+        throw bplistErr;
+      }
+    } else {
+      // 2. Standard JSON string
+      const text = buffer.toString('utf8').trim();
+      if (text.startsWith('{') || text.startsWith('[')) {
+        parsedJson = JSON.parse(text);
+      }
     }
   }
 
-  const buffer = await fs.readFile(filePath);
-  
-  // 1. Binary property list (starts with magic bytes "bplist")
-  if (buffer.length >= 6 && buffer.toString('utf8', 0, 6) === 'bplist') {
+  if (!parsedJson) {
+    throw new Error(`Unrecognized data format in ${path.basename(filePath)}`);
+  }
+
+  // Check if encryptedData payload can be decompressed
+  if (parsedJson && parsedJson.encryptedData) {
+    const rawBuf = Buffer.isBuffer(parsedJson.encryptedData) 
+      ? parsedJson.encryptedData 
+      : Buffer.from(parsedJson.encryptedData.data || parsedJson.encryptedData);
+
     try {
-      const parsed = bplistParser.parseBuffer(buffer);
-      if (Array.isArray(parsed) && parsed.length === 1) {
-        return parsed[0];
+      const decompressed = zlib.inflateSync(rawBuf);
+      const decText = decompressed.toString('utf8').trim();
+      if (decText.startsWith('{') || decText.startsWith('[')) {
+        return JSON.parse(decText);
       }
-      return parsed;
-    } catch (bplistErr) {
-      throw bplistErr;
+      return bplistParser.parseBuffer(decompressed);
+    } catch (zlibErr) {
+      try {
+        const unzipped = zlib.gunzipSync(rawBuf);
+        const decText = unzipped.toString('utf8').trim();
+        if (decText.startsWith('{') || decText.startsWith('[')) {
+          return JSON.parse(decText);
+        }
+        return bplistParser.parseBuffer(unzipped);
+      } catch (gzipErr) {}
     }
   }
 
-  // 2. Standard JSON string
-  const text = buffer.toString('utf8').trim();
-  if (text.startsWith('{') || text.startsWith('[')) {
-    return JSON.parse(text);
-  }
-
-  throw new Error(`Unrecognized data format in ${path.basename(filePath)} (length: ${buffer.length})`);
+  return parsedJson;
 }
 
 function isPlainRecord(obj) {
@@ -293,6 +324,7 @@ export class FindMyParser {
     this.devicesFilePath = path.join(cacheDir, 'Devices.data');
     this.beaconFilePath = path.join(cacheDir, 'Beacon.data');
     this.home = os.homedir();
+    this.appleScriptReader = new MacAppleScriptReader();
     this.candidateDirs = [
       cacheDir,
       path.join(this.home, 'Library/Containers/com.apple.findmy/Data/Library/Caches/com.apple.findmy.fmipcore'),
@@ -392,13 +424,24 @@ export class FindMyParser {
       console.log(`[FindMyParser] Parsed ${itemsList.length} valid item records from ${usedPath}`);
       if (itemsList.length > 0) {
         console.log(`[FindMyParser] Item sample keys:`, Object.keys(itemsList[0]));
+        return this.parseItemsData(itemsList);
       }
 
-      return this.parseItemsData(itemsList);
+      // If disk cache is encrypted/empty, read live from Find My app
+      if (config.isMacOS) {
+        console.log(`[FindMyParser] Reading live items from Find My app via AppleScript...`);
+        const liveItems = await this.appleScriptReader.getFindMyData();
+        if (liveItems && liveItems.length > 0) {
+          return liveItems;
+        }
+      }
+
+      return [];
     } catch (err) {
       console.error(`[FindMyParser] Failed to read items cache:`, err.message);
-      if (!config.isMacOS) {
-        return sampleItems;
+      if (config.isMacOS) {
+        const liveItems = await this.appleScriptReader.getFindMyData();
+        if (liveItems && liveItems.length > 0) return liveItems;
       }
       return [];
     }
@@ -416,14 +459,12 @@ export class FindMyParser {
       console.log(`[FindMyParser] Parsed ${devicesList.length} valid device records from ${devicesPath}`);
       if (devicesList.length > 0) {
         console.log(`[FindMyParser] Device sample keys:`, Object.keys(devicesList[0]));
+        return this.parseDevicesData(devicesList);
       }
 
-      return this.parseDevicesData(devicesList);
+      return [];
     } catch (err) {
       console.error(`[FindMyParser] Failed to read devices cache:`, err.message);
-      if (!config.isMacOS) {
-        return sampleDevices;
-      }
       return [];
     }
   }
