@@ -1,7 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { exec } from 'child_process';
+import util from 'util';
+import bplistParser from 'bplist-parser';
 import { config } from './config.js';
 import { sampleItems, sampleDevices } from './sampleData.js';
+
+const execPromise = util.promisify(exec);
 
 // Convert various timestamp formats (Cocoa epoch vs Unix epoch vs ISO) to standard Unix ms
 export function normalizeTimestamp(rawTimestamp) {
@@ -175,6 +180,67 @@ export function formatAddress(rawAddress) {
   };
 }
 
+// Parse binary plist or JSON from file buffer or path
+export async function parseFileContent(filePath) {
+  const buffer = await fs.readFile(filePath);
+  
+  // 1. Binary property list (starts with magic bytes "bplist")
+  if (buffer.length >= 6 && buffer.toString('utf8', 0, 6) === 'bplist') {
+    try {
+      const parsed = bplistParser.parseBuffer(buffer);
+      if (Array.isArray(parsed) && parsed.length === 1) {
+        return parsed[0];
+      }
+      return parsed;
+    } catch (bplistErr) {
+      if (config.isMacOS) {
+        try {
+          const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
+          return JSON.parse(stdout);
+        } catch (plutilErr) {
+          throw new Error(`Failed to parse bplist via plutil: ${plutilErr.message}`);
+        }
+      }
+      throw bplistErr;
+    }
+  }
+
+  // 2. Standard JSON string
+  const text = buffer.toString('utf8').trim();
+  if (text.startsWith('{') || text.startsWith('[')) {
+    return JSON.parse(text);
+  }
+
+  // 3. Fallback for macOS plutil (handles XML plists, old plist formats)
+  if (config.isMacOS) {
+    try {
+      const { stdout } = await execPromise(`plutil -convert json -o - "${filePath}"`);
+      return JSON.parse(stdout);
+    } catch (e) {}
+  }
+
+  throw new Error(`Unrecognized data format in ${path.basename(filePath)} (length: ${buffer.length})`);
+}
+
+function extractArray(data, preferredKeys = ['items', 'devices', 'data', 'records', 'value']) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+
+  for (const key of preferredKeys) {
+    if (Array.isArray(data[key])) {
+      return data[key];
+    }
+  }
+
+  // If it's an object with numeric keys or values
+  const values = Object.values(data);
+  if (values.length > 0 && typeof values[0] === 'object') {
+    return values;
+  }
+
+  return [];
+}
+
 export class FindMyParser {
   constructor(cacheDir = config.cacheDir) {
     this.cacheDir = cacheDir;
@@ -207,9 +273,9 @@ export class FindMyParser {
     }
 
     try {
-      const rawContent = await fs.readFile(this.itemsFilePath, 'utf8');
-      const data = JSON.parse(rawContent);
-      return this.parseItemsData(Array.isArray(data) ? data : (data.items || []));
+      const rawData = await parseFileContent(this.itemsFilePath);
+      const itemsList = extractArray(rawData, ['items', 'data', 'records']);
+      return this.parseItemsData(itemsList);
     } catch (err) {
       // If macOS cache not yet found or in development mode, fallback safely
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {
@@ -227,9 +293,9 @@ export class FindMyParser {
     }
 
     try {
-      const rawContent = await fs.readFile(this.devicesFilePath, 'utf8');
-      const data = JSON.parse(rawContent);
-      return this.parseDevicesData(Array.isArray(data) ? data : (data.devices || []));
+      const rawData = await parseFileContent(this.devicesFilePath);
+      const devicesList = extractArray(rawData, ['devices', 'data', 'records']);
+      return this.parseDevicesData(devicesList);
     } catch (err) {
       // Fallback for dev / mock
       if (process.env.NODE_ENV !== 'production' || !config.isMacOS) {

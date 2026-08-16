@@ -10,10 +10,18 @@
     "mock": "MOCK_DATA=true node server/index.js",
     "setup:mac": "bash scripts/setup-mac.sh"
   },
-  "keywords": ["findmy", "airtag", "apple", "android", "tailscale", "pwa"],
+  "keywords": [
+    "findmy",
+    "airtag",
+    "apple",
+    "android",
+    "tailscale",
+    "pwa"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "bplist-parser": "^0.3.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
